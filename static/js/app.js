@@ -1,7 +1,6 @@
-// Global Application State
-let allReleases = []; // Raw entries from RSS feed
-let allParsedUpdates = []; // Normalized individual updates
-let currentFilter = 'all';
+// Application State
+let allFeeds = []; // Cached feeds from API
+let currentTab = 'all'; // 'all' (Top News) or 'saved' (My Feeds)
 let currentSearchQuery = '';
 
 // DOM Elements
@@ -10,39 +9,37 @@ const errorContainer = document.getElementById('error-container');
 const errorMessage = document.getElementById('error-message');
 const retryBtn = document.getElementById('error-retry-btn');
 const emptyContainer = document.getElementById('empty-container');
-const timelineFlow = document.getElementById('timeline-flow');
+const emptyTitle = document.getElementById('empty-title');
+const emptyMessage = document.getElementById('empty-message');
+const emptyActionBtn = document.getElementById('empty-action-btn');
+const feedsGrid = document.getElementById('feeds-grid-container');
 const refreshBtn = document.getElementById('refresh-btn');
 const lastUpdatedText = document.getElementById('last-updated-text');
 const searchInput = document.getElementById('search-input');
 const clearSearchBtn = document.getElementById('clear-search-btn');
-const filterTabsContainer = document.getElementById('filter-tabs-container');
-const clearFiltersBtn = document.getElementById('clear-filters-btn');
+const feedTabsSelector = document.getElementById('feed-tabs-selector');
+const tabActionsArea = document.getElementById('tab-actions-area');
+const clearMyFeedsBtn = document.getElementById('clear-my-feeds-btn');
+const savedCounterBadge = document.getElementById('saved-counter-badge');
 
 // Stats Counters
 const statTotal = document.getElementById('stat-total-count');
-const statFeatures = document.getElementById('stat-features-count');
-const statChanges = document.getElementById('stat-changes-count');
-const statDeprecations = document.getElementById('stat-deprecations-count');
+const statSaved = document.getElementById('stat-saved-count');
+const statMarket = document.getElementById('stat-market-count');
+const statExclusive = document.getElementById('stat-exclusive-count');
 
-// Tweet Modal Elements
-const tweetModal = document.getElementById('tweet-modal');
-const tweetTextarea = document.getElementById('tweet-textarea');
-const charProgress = document.getElementById('char-progress');
-const charCountText = document.getElementById('char-count-text');
-const tweetPreviewText = document.getElementById('tweet-preview-text');
-const publishTweetBtn = document.getElementById('publish-tweet-btn');
-const cancelModalBtn = document.getElementById('cancel-modal-btn');
-const closeModalBtn = document.getElementById('close-modal-btn');
+// Toast Elements
 const toastWrapper = document.getElementById('toast-wrapper');
 const toastText = document.getElementById('toast-text');
 
-// Init Event Listeners
+// Initialize App
 document.addEventListener('DOMContentLoaded', () => {
-    fetchReleaseNotes(false);
+    // Load feeds
+    fetchFeeds(false);
     
-    // Refresh handlers
-    refreshBtn.addEventListener('click', () => fetchReleaseNotes(true));
-    retryBtn.addEventListener('click', () => fetchReleaseNotes(true));
+    // Core event handlers
+    refreshBtn.addEventListener('click', () => fetchFeeds(true));
+    retryBtn.addEventListener('click', () => fetchFeeds(true));
     
     // Search handlers
     searchInput.addEventListener('input', handleSearch);
@@ -51,34 +48,50 @@ document.addEventListener('DOMContentLoaded', () => {
         handleSearch();
     });
     
-    // Filter handlers
-    filterTabsContainer.addEventListener('click', handleFilterClick);
-    clearFiltersBtn.addEventListener('click', resetSearchAndFilters);
-    
-    // Modal handlers
-    closeModalBtn.addEventListener('click', closeTweetModal);
-    cancelModalBtn.addEventListener('click', closeTweetModal);
-    tweetTextarea.addEventListener('input', updateTweetComposerState);
-    publishTweetBtn.addEventListener('click', publishTweetToX);
-    
-    // Hashtags append
-    document.querySelectorAll('.hashtag-pill').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            const tag = e.target.getAttribute('data-tag');
-            insertTextAtCursor(tweetTextarea, ' ' + tag);
-            updateTweetComposerState();
+    // Quick Keyword tags
+    document.querySelectorAll('.tag-pill').forEach(tag => {
+        tag.addEventListener('click', (e) => {
+            const keyword = e.target.getAttribute('data-keyword');
+            
+            // Toggle active tag styling
+            if (e.target.classList.contains('active')) {
+                e.target.classList.remove('active');
+                searchInput.value = '';
+            } else {
+                document.querySelectorAll('.tag-pill').forEach(t => t.classList.remove('active'));
+                e.target.classList.add('active');
+                searchInput.value = keyword;
+            }
+            handleSearch();
         });
     });
-
-    // Close modal on click outside container
-    tweetModal.addEventListener('click', (e) => {
-        if (e.target === tweetModal) {
-            closeTweetModal();
+    
+    // Tab switching
+    feedTabsSelector.addEventListener('click', (e) => {
+        const button = e.target.closest('.feed-tab');
+        if (!button) return;
+        
+        document.querySelectorAll('.feed-tab').forEach(btn => btn.classList.remove('active'));
+        button.classList.add('active');
+        
+        currentTab = button.getAttribute('data-tab');
+        
+        // Show/hide clear bookmarks action
+        if (currentTab === 'saved') {
+            tabActionsArea.style.display = 'block';
+        } else {
+            tabActionsArea.style.display = 'none';
         }
+        
+        renderFeeds();
     });
+    
+    // Clear all saved feeds
+    clearMyFeedsBtn.addEventListener('click', clearAllBookmarks);
+    emptyActionBtn.addEventListener('click', resetSearchAndFilters);
 });
 
-// Toast notification function
+// Toast notification helper
 function showToast(message) {
     toastText.textContent = message;
     toastWrapper.style.display = 'block';
@@ -92,11 +105,11 @@ function showToast(message) {
     }, 2500);
 }
 
-// Fetch Release Notes from API
-async function fetchReleaseNotes(forceRefresh = false) {
+// Fetch Feeds from Flask server API
+async function fetchFeeds(forceRefresh = false) {
     showLoading();
     
-    let url = '/api/releases';
+    let url = '/api/feeds';
     if (forceRefresh) {
         url += '?refresh=true';
         refreshBtn.classList.add('refreshing');
@@ -106,7 +119,7 @@ async function fetchReleaseNotes(forceRefresh = false) {
     try {
         const response = await fetch(url);
         if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
+            throw new Error(`Server returned error status ${response.status}`);
         }
         const data = await response.json();
         
@@ -114,29 +127,28 @@ async function fetchReleaseNotes(forceRefresh = false) {
             throw new Error(data.error);
         }
         
-        allReleases = data.releases || [];
-        processAndNormalizeUpdates(allReleases);
+        allFeeds = data.feeds || [];
         
-        // Update stats dashboard
+        // Sync counters
         updateStats();
         
-        // Render current view
-        renderTimeline();
+        // Render feeds grid
+        renderFeeds();
         
-        // Update last refreshed label
+        // Update updated label
         if (data.last_fetched) {
-            const fetchDate = new Date(data.last_fetched);
-            lastUpdatedText.textContent = `Sync: ${fetchDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}`;
+            const fetchTime = new Date(data.last_fetched);
+            lastUpdatedText.textContent = `Sync: ${fetchTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}`;
         }
         
         if (forceRefresh) {
-            showToast(data.warning ? "Data refreshed (offline mode)" : "Successfully synced release notes!");
+            showToast(data.warning ? "Data loaded (cached version)" : "Successfully fetched latest Moneycontrol feeds!");
         }
         
         showContent();
     } catch (error) {
-        console.error("Error fetching release notes:", error);
-        errorMessage.textContent = error.message || "Could not fetch release notes feed. Please verify your connection.";
+        console.error("Error loading feeds:", error);
+        errorMessage.textContent = error.message || "Failed to load feed from Moneycontrol.";
         showError();
     } finally {
         refreshBtn.classList.remove('refreshing');
@@ -144,118 +156,99 @@ async function fetchReleaseNotes(forceRefresh = false) {
     }
 }
 
-// Parse feed entries into individual update blocks
-function processAndNormalizeUpdates(entries) {
-    allParsedUpdates = [];
-    
-    entries.forEach(entry => {
-        const updates = parseEntryContent(entry.content, entry.title, entry.link);
-        allParsedUpdates.push(...updates);
-    });
+// Local Storage Bookmark Book-keeping
+function getBookmarkedFeeds() {
+    return JSON.parse(localStorage.getItem('mc_saved_feeds')) || [];
 }
 
-// Parses HTML structure inside GCP feed contents into separate update chunks
-function parseEntryContent(contentHtml, dateTitle, originalLink) {
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(contentHtml, 'text/html');
-    const updates = [];
-    const children = Array.from(doc.body.children);
+function saveBookmarkedFeeds(feeds) {
+    localStorage.setItem('mc_saved_feeds', JSON.stringify(feeds));
+    updateStats();
+}
+
+// Add or Remove bookmark from storage
+function toggleBookmark(feedItem, cardElement) {
+    const savedList = getBookmarkedFeeds();
+    const index = savedList.findIndex(f => f.guid === feedItem.guid);
     
-    let currentType = 'Other';
-    let currentContentElements = [];
-    
-    function saveCurrentUpdate() {
-        if (currentContentElements.length > 0) {
-            // Create a temporary container
-            const tempDiv = document.createElement('div');
-            currentContentElements.forEach(el => tempDiv.appendChild(el.cloneNode(true)));
-            
-            // Clean up relative links
-            tempDiv.querySelectorAll('a').forEach(a => {
-                a.setAttribute('target', '_blank');
-                a.setAttribute('rel', 'noopener noreferrer');
-                const href = a.getAttribute('href');
-                if (href && href.startsWith('/')) {
-                    a.setAttribute('href', 'https://cloud.google.com' + href);
-                }
-            });
-            
-            const htmlContent = tempDiv.innerHTML.trim();
-            const textContent = tempDiv.innerText.trim();
-            
-            // Determine precise Category
-            const typeLower = currentType.toLowerCase();
-            let category = 'other';
-            if (typeLower.includes('feature')) {
-                category = 'feature';
-            } else if (typeLower.includes('change') || typeLower.includes('update') || typeLower.includes('improv') || typeLower.includes('fix') || typeLower.includes('resolv')) {
-                category = 'change';
-            } else if (typeLower.includes('deprecat') || typeLower.includes('remov')) {
-                category = 'deprecation';
-            }
-            
-            updates.push({
-                type: currentType,
-                category: category,
-                html: htmlContent,
-                text: textContent,
-                date: dateTitle,
-                link: originalLink
-            });
-            currentContentElements = [];
-        }
-    }
-    
-    // Group elements by H3 header
-    children.forEach(child => {
-        if (child.tagName === 'H3') {
-            saveCurrentUpdate();
-            currentType = child.textContent.trim();
+    if (index > -1) {
+        // Remove
+        savedList.splice(index, 1);
+        saveBookmarkedFeeds(savedList);
+        showToast("Removed from Saved Feeds");
+        
+        if (currentTab === 'saved') {
+            // Smoothly collapse and remove the card in my feeds tab
+            cardElement.style.opacity = '0';
+            cardElement.style.transform = 'scale(0.8) translateY(20px)';
+            setTimeout(() => {
+                renderFeeds();
+            }, 300);
         } else {
-            currentContentElements.push(child);
+            // Toggle bookmark icon class locally
+            const btn = cardElement.querySelector('.btn-bookmark');
+            btn.classList.remove('saved');
         }
-    });
-    
-    // Save the last remaining block
-    saveCurrentUpdate();
-    
-    // Fallback if no H3 headers found at all
-    if (updates.length === 0 && contentHtml.trim().length > 0) {
-        updates.push({
-            type: 'General',
-            category: 'other',
-            html: contentHtml,
-            text: doc.body.innerText.trim(),
-            date: dateTitle,
-            link: originalLink
-        });
+    } else {
+        // Add
+        savedList.push(feedItem);
+        saveBookmarkedFeeds(savedList);
+        
+        // Micro-animation popup effect
+        const btn = cardElement.querySelector('.btn-bookmark');
+        btn.classList.add('saved');
+        
+        cardElement.classList.add('save-pop-animation');
+        setTimeout(() => {
+            cardElement.classList.remove('save-pop-animation');
+        }, 300);
+        
+        showToast("Added to Saved Feeds!");
     }
-    
-    return updates;
 }
 
-// Update counts on the Stats dashboard
+// Clear all bookmarks
+function clearAllBookmarks() {
+    if (confirm("Are you sure you want to clear all saved feeds?")) {
+        saveBookmarkedFeeds([]);
+        showToast("Cleared all bookmarked feeds");
+        renderFeeds();
+    }
+}
+
+// Calculate and animate stats dashboard counters
 function updateStats() {
-    statTotal.textContent = allParsedUpdates.length;
+    const savedList = getBookmarkedFeeds();
+    savedCounterBadge.textContent = savedList.length;
     
-    const featureCount = allParsedUpdates.filter(u => u.category === 'feature').length;
-    const changeCount = allParsedUpdates.filter(u => u.category === 'change').length;
-    const deprecationCount = allParsedUpdates.filter(u => u.category === 'deprecation').length;
+    // Core numbers
+    const totalCount = allFeeds.length;
+    const savedCount = savedList.length;
     
-    statFeatures.textContent = featureCount;
-    statChanges.textContent = changeCount;
-    statDeprecations.textContent = deprecationCount;
+    // Simple keywords profiling to count Market & Exclusives
+    const marketCount = allFeeds.filter(f => {
+        const terms = ['sensex', 'nifty', 'market', 'stock', 'indices', 'bse', 'nse', 'hind zinc', 'sbi', 'gainer', 'loser'];
+        const titleLower = f.title.toLowerCase();
+        const descLower = f.description.toLowerCase();
+        return terms.some(t => titleLower.includes(t) || descLower.includes(t));
+    }).length;
     
-    // Quick micro-animations for numbers
-    animateValue(statTotal, 0, allParsedUpdates.length, 500);
-    animateValue(statFeatures, 0, featureCount, 500);
-    animateValue(statChanges, 0, changeCount, 500);
-    animateValue(statDeprecations, 0, deprecationCount, 500);
+    const exclusiveCount = allFeeds.filter(f => {
+        const terms = ['exclusive', 'special', 'moneycontrol exclusive', 'mc exclusive'];
+        const titleLower = f.title.toLowerCase();
+        return terms.some(t => titleLower.includes(t));
+    }).length;
+    
+    // Animate values
+    animateValue(statTotal, 0, totalCount, 400);
+    animateValue(statSaved, 0, savedCount, 400);
+    animateValue(statMarket, 0, marketCount, 400);
+    animateValue(statExclusive, 0, exclusiveCount, 400);
 }
 
-// Simple counter animation for dashboard
+// Value counters animator
 function animateValue(obj, start, end, duration) {
-    if (start === end) return;
+    if (!obj || start === end) return;
     let startTimestamp = null;
     const step = (timestamp) => {
         if (!startTimestamp) startTimestamp = timestamp;
@@ -270,303 +263,158 @@ function animateValue(obj, start, end, duration) {
     window.requestAnimationFrame(step);
 }
 
-// Handle Search Inputs
+// Perform text filter matching
 function handleSearch() {
     currentSearchQuery = searchInput.value.trim().toLowerCase();
     
+    // Toggle active state for tag pills based on search queries
+    document.querySelectorAll('.tag-pill').forEach(pill => {
+        const keyword = pill.getAttribute('data-keyword').toLowerCase();
+        if (currentSearchQuery.includes(keyword)) {
+            pill.classList.add('active');
+        } else {
+            pill.classList.remove('active');
+        }
+    });
+
     if (currentSearchQuery.length > 0) {
         clearSearchBtn.style.display = 'block';
     } else {
         clearSearchBtn.style.display = 'none';
     }
     
-    renderTimeline();
+    renderFeeds();
 }
 
-// Handle Filter tab switches
-function handleFilterClick(e) {
-    if (!e.target.classList.contains('filter-tab')) return;
-    
-    document.querySelectorAll('.filter-tab').forEach(tab => tab.classList.remove('active'));
-    e.target.classList.add('active');
-    
-    currentFilter = e.target.getAttribute('data-filter');
-    renderTimeline();
-}
-
-// Reset filters to default
 function resetSearchAndFilters() {
     searchInput.value = '';
     currentSearchQuery = '';
     clearSearchBtn.style.display = 'none';
-    
-    document.querySelectorAll('.filter-tab').forEach(tab => {
-        tab.classList.remove('active');
-        if (tab.getAttribute('data-filter') === 'all') {
-            tab.classList.add('active');
-        }
-    });
-    
-    currentFilter = 'all';
-    renderTimeline();
+    document.querySelectorAll('.tag-pill').forEach(pill => pill.classList.remove('active'));
+    renderFeeds();
 }
 
-// Filter and Render updates timeline
-function renderTimeline() {
-    // 1. Filter updates
-    const filteredUpdates = allParsedUpdates.filter(update => {
-        // Filter by Category Tab
-        if (currentFilter !== 'all' && update.category !== currentFilter) {
-            return false;
-        }
-        
-        // Filter by Search Query
-        if (currentSearchQuery.length > 0) {
-            const matchesText = update.text.toLowerCase().includes(currentSearchQuery);
-            const matchesType = update.type.toLowerCase().includes(currentSearchQuery);
-            const matchesDate = update.date.toLowerCase().includes(currentSearchQuery);
-            return matchesText || matchesType || matchesDate;
-        }
-        
-        return true;
-    });
+// Renders the feeds grid items
+function renderFeeds() {
+    feedsGrid.innerHTML = '';
     
-    // 2. Clear previous content
-    timelineFlow.innerHTML = '';
+    // 1. Determine active list
+    let targetList = (currentTab === 'all') ? allFeeds : getBookmarkedFeeds();
     
-    if (filteredUpdates.length === 0) {
+    // 2. Filter by search query
+    if (currentSearchQuery.length > 0) {
+        targetList = targetList.filter(item => {
+            const titleMatch = item.title.toLowerCase().includes(currentSearchQuery);
+            const descMatch = item.description.toLowerCase().includes(currentSearchQuery);
+            return titleMatch || descMatch;
+        });
+    }
+    
+    // 3. Render Empty States if empty list
+    if (targetList.length === 0) {
+        feedsGrid.style.display = 'none';
         emptyContainer.style.display = 'flex';
-        timelineFlow.style.display = 'none';
+        
+        if (currentTab === 'saved') {
+            emptyTitle.textContent = "Your Feeds list is empty";
+            emptyMessage.textContent = "Tap the bookmark star icon on any news card in 'Top News' tab to save them here.";
+            emptyActionBtn.style.display = 'none';
+        } else {
+            emptyTitle.textContent = "No matching feeds found";
+            emptyMessage.textContent = "Refine your search parameters or select a trending keyword.";
+            emptyActionBtn.style.display = 'inline-flex';
+        }
         return;
     }
     
     emptyContainer.style.display = 'none';
-    timelineFlow.style.display = 'flex';
+    feedsGrid.style.display = 'grid';
     
-    // 3. Group by Date
-    const groupsByDate = {};
-    filteredUpdates.forEach(update => {
-        if (!groupsByDate[update.date]) {
-            groupsByDate[update.date] = [];
-        }
-        groupsByDate[update.date].push(update);
-    });
+    // Get saved GUIDs list for matching bookmark star highlight styling
+    const savedGuids = getBookmarkedFeeds().map(f => f.guid);
     
-    // 4. Generate elements
-    Object.keys(groupsByDate).forEach(date => {
-        const dateGroup = document.createElement('div');
-        dateGroup.className = 'timeline-group';
+    // 4. Create cards
+    targetList.forEach(item => {
+        const isSaved = savedGuids.includes(item.guid);
+        const card = document.createElement('article');
+        card.className = 'feed-card';
         
-        // Sticky Header for date
-        const dateHeader = document.createElement('div');
-        dateHeader.className = 'timeline-date-marker';
-        dateHeader.innerHTML = `
-            <div class="date-node"></div>
-            <h2 class="date-title">${date}</h2>
-        `;
-        dateGroup.appendChild(dateHeader);
+        // Exclusives tag marker
+        const isExclusive = item.title.toLowerCase().includes('exclusive') || item.title.toLowerCase().includes('special');
+        const badgeHTML = isExclusive ? `<span class="exclusive-badge">Exclusive</span>` : '';
         
-        // Cards grid
-        const cardsGrid = document.createElement('div');
-        cardsGrid.className = 'cards-grid';
-        
-        groupsByDate[date].forEach(update => {
-            const card = document.createElement('article');
-            card.className = `release-card category-${update.category}`;
-            
-            // Badge text & class
-            let badgeClass = 'badge-other';
-            if (update.category === 'feature') badgeClass = 'badge-feature';
-            if (update.category === 'change') badgeClass = 'badge-change';
-            if (update.category === 'deprecation') badgeClass = 'badge-deprecation';
-            
-            card.innerHTML = `
-                <div class="card-header">
-                    <span class="category-badge ${badgeClass}">${update.type}</span>
-                </div>
-                <div class="card-body">
-                    ${update.html}
-                </div>
-                <div class="card-actions">
-                    <button class="action-btn action-btn-copy" aria-label="Copy update details">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-                        </svg>
-                        Copy
-                    </button>
-                    <button class="action-btn action-btn-tweet" aria-label="Share update on Twitter">
-                        <!-- Twitter/X logo icon -->
-                        <svg viewBox="0 0 24 24" fill="currentColor">
-                            <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
-                        </svg>
-                        Share
-                    </button>
+        // Image render (or graphic gradient)
+        let imgHTML = '';
+        if (item.image_url) {
+            imgHTML = `
+                <div class="card-image-box">
+                    ${badgeHTML}
+                    <img class="card-image" src="${item.image_url}" alt="${item.title}" loading="lazy">
                 </div>
             `;
-            
-            // Add listeners to actions
-            card.querySelector('.action-btn-copy').addEventListener('click', () => copyUpdateText(update));
-            card.querySelector('.action-btn-tweet').addEventListener('click', () => openTweetModal(update));
-            
-            cardsGrid.appendChild(card);
-        });
+        } else {
+            imgHTML = `
+                <div class="card-image-box">
+                    ${badgeHTML}
+                    <div class="card-image-placeholder">
+                        <div class="placeholder-chart-bg"></div>
+                        <!-- Chart Arrow Up Icon -->
+                        <svg class="placeholder-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/>
+                            <polyline points="17 6 23 6 23 12"/>
+                        </svg>
+                    </div>
+                </div>
+            `;
+        }
         
-        dateGroup.appendChild(cardsGrid);
-        timelineFlow.appendChild(dateGroup);
-    });
-}
-
-// Copy update contents to clipboard
-function copyUpdateText(update) {
-    const headerPrefix = `[BigQuery Update - ${update.date}]\nCategory: ${update.type}\n\n`;
-    const fullTextToCopy = `${headerPrefix}${update.text}\n\nRead more: ${update.link}`;
-    
-    navigator.clipboard.writeText(fullTextToCopy).then(() => {
-        showToast("Update copied to clipboard!");
-    }).catch(err => {
-        console.error('Could not copy text: ', err);
-        showToast("Failed to copy. Please copy manually.");
+        card.innerHTML = `
+            ${imgHTML}
+            <div class="card-details">
+                <div class="card-meta">
+                    <!-- Clock/Time Icon -->
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="10"/>
+                        <polyline points="12 6 12 12 16 14"/>
+                    </svg>
+                    <span>${item.pub_date}</span>
+                </div>
+                <h2 class="card-title" title="${item.title}">${item.title}</h2>
+                <p class="card-description">${item.description}</p>
+                
+                <div class="card-footer">
+                    <a href="${item.link}" target="_blank" rel="noopener noreferrer" class="btn btn-outline btn-read">
+                        Read Story
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12">
+                            <line x1="5" y1="12" x2="19" y2="12"/>
+                            <polyline points="12 5 19 12 12 19"/>
+                        </svg>
+                    </a>
+                    <button class="btn-bookmark ${isSaved ? 'saved' : ''}" aria-label="Bookmark this article">
+                        <!-- Bookmark Star icon -->
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+        `;
+        
+        // Add toggle bookmark click event
+        card.querySelector('.btn-bookmark').addEventListener('click', () => toggleBookmark(item, card));
+        
+        feedsGrid.appendChild(card);
     });
 }
 
 /* ========================================================
-   TWITTER / X COMPOSER LOGIC
-======================================================== */
-let activeUpdateForTweet = null;
-
-// Opens the customized composer modal
-function openTweetModal(update) {
-    activeUpdateForTweet = update;
-    
-    // Auto-generate starter tweet content
-    // Format: "💡 New #BigQuery Feature (June 23, 2026): [Description truncated] Link"
-    const prefixEmoji = update.category === 'feature' ? '💡' : update.category === 'deprecation' ? '⚠️' : '⚙️';
-    const tag = update.category === 'feature' ? '#BigQuery Feature' : update.category === 'deprecation' ? '#BigQuery Deprecation' : '#BigQuery Update';
-    
-    const starterPrefix = `${prefixEmoji} ${tag} (${update.date}): `;
-    const starterSuffix = `\n\nRead more: ${update.link}`;
-    
-    // Max characters available for text body
-    // 280 - (prefix length) - (suffix length)
-    const reservedLength = starterPrefix.length + starterSuffix.length;
-    const maxBodyLength = 280 - reservedLength - 3; // 3 chars for ellipsis '...'
-    
-    let textBody = update.text;
-    if (textBody.length > maxBodyLength) {
-        textBody = textBody.substring(0, maxBodyLength).trim() + '...';
-    }
-    
-    tweetTextarea.value = `${starterPrefix}${textBody}${starterSuffix}`;
-    tweetModal.style.display = 'flex';
-    
-    // Set focus
-    setTimeout(() => tweetTextarea.focus(), 100);
-    
-    updateTweetComposerState();
-}
-
-function closeTweetModal() {
-    tweetModal.style.display = 'none';
-    activeUpdateForTweet = null;
-}
-
-// Recalculates remaining characters, highlights over-limits, updates mock live view
-function updateTweetComposerState() {
-    const text = tweetTextarea.value;
-    const charCount = text.length;
-    const remaining = 280 - charCount;
-    
-    // Counter text
-    charCountText.textContent = `${charCount} / 280`;
-    
-    // Circular Progress render
-    const percent = Math.min((charCount / 280) * 100, 100);
-    let colorClass = '';
-    
-    if (remaining < 0) {
-        colorClass = 'error';
-        charCountText.style.color = '#ef4444';
-        publishTweetBtn.setAttribute('disabled', 'true');
-        publishTweetBtn.style.opacity = '0.5';
-    } else if (remaining <= 20) {
-        colorClass = 'warning';
-        charCountText.style.color = '#eab308';
-        publishTweetBtn.removeAttribute('disabled');
-        publishTweetBtn.style.opacity = '1';
-    } else {
-        charCountText.style.color = 'var(--twitter-text-secondary)';
-        publishTweetBtn.removeAttribute('disabled');
-        publishTweetBtn.style.opacity = '1';
-    }
-    
-    charProgress.className = `circular-progress ${colorClass}`;
-    
-    // Conic gradient mapping
-    const progressColor = remaining < 0 ? '#ef4444' : remaining <= 20 ? '#eab308' : '#1d9bf0';
-    charProgress.style.background = `
-        radial-gradient(closest-side, #16181c 79%, transparent 80% 100%),
-        conic-gradient(${progressColor} ${percent}%, rgba(255, 255, 255, 0.1) 0%)
-    `;
-    
-    // Render Live Preview text (highlight hashtags in blue, etc.)
-    renderMockTweetText(text);
-}
-
-// Highlight URLs and hashtags in the mock tweet layout for that premium feeling
-function renderMockTweetText(rawText) {
-    // Escape HTML tags to prevent XSS in mock preview
-    let escaped = rawText
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;");
-        
-    // Match hashtags: #word
-    escaped = escaped.replace(/(#[a-zA-Z0-9_]+)/g, '<span style="color: #1d9bf0; cursor: pointer;">$1</span>');
-    
-    // Match links: http/https
-    escaped = escaped.replace(/(https?:\/\/[^\s]+)/g, '<span style="color: #1d9bf0; cursor: pointer; text-decoration: none;">$1</span>');
-    
-    tweetPreviewText.innerHTML = escaped || '<span style="color: var(--text-muted);">Start drafting your update...</span>';
-}
-
-// Opens the X Tweet intent share page in a new window
-function publishTweetToX() {
-    const text = tweetTextarea.value;
-    if (text.length > 280) {
-        showToast("Tweet exceeds the 280-character limit!");
-        return;
-    }
-    
-    const twitterUrl = `https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}`;
-    window.open(twitterUrl, '_blank', 'width=550,height=420,toolbar=no,menubar=no,scrollbars=yes');
-    
-    closeTweetModal();
-    showToast("Launching Twitter/X share window...");
-}
-
-// Helper to insert text at textarea cursor position
-function insertTextAtCursor(textarea, textToInsert) {
-    const startPos = textarea.selectionStart;
-    const endPos = textarea.selectionEnd;
-    const oldText = textarea.value;
-    
-    // Insert text
-    textarea.value = oldText.substring(0, startPos) + textToInsert + oldText.substring(endPos, oldText.length);
-    
-    // Move cursor to end of inserted text
-    textarea.selectionStart = textarea.selectionEnd = startPos + textToInsert.length;
-    textarea.focus();
-}
-
-/* ========================================================
-   VIEW TRANSITION STATES
+   VIEW STATE TRANSITIONS
 ======================================================== */
 function showLoading() {
     skeletonLoader.style.display = 'block';
     errorContainer.style.display = 'none';
     emptyContainer.style.display = 'none';
-    timelineFlow.style.display = 'none';
+    feedsGrid.style.display = 'none';
 }
 
 function showContent() {
@@ -578,5 +426,5 @@ function showError() {
     skeletonLoader.style.display = 'none';
     errorContainer.style.display = 'flex';
     emptyContainer.style.display = 'none';
-    timelineFlow.style.display = 'none';
+    feedsGrid.style.display = 'none';
 }
