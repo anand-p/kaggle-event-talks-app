@@ -51,21 +51,27 @@ Ensure you have Python 3.8+ installed.
 ### 2. Set Up Virtual Environment
 ```bash
 # Navigate to the project folder
-cd Moneycontrol-Feed-Hub
+cd agy-cli-projects
 
-# Create a virtual environment
+# Create a virtual environment [skip this step if its already created on this folder]
 python -m venv venv
 
-# Activate on Windows
-venv\\Scripts\\activate
+**### 3. Activate the environment:**
 
-# Activate on macOS/Linux
-source venv/bin/activate
+Command Prompt:
+
+bash
+venv\Scripts\activate
+PowerShell:
+
+bash
+.\venv\Scripts\Activate
+Once activated, you’ll see (venv) before your prompt.
 ```
 
 ### 3. Install Dependencies
 ```bash
-pip install Flask feedparser
+pip install Flask
 ```
 
 ### 4. Run the Server
@@ -75,6 +81,10 @@ python app.py
 Visit **http://127.0.0.1:5000** in your browser to view the dashboard.
 
 ---
+# Deactivate when done:
+
+bash
+deactivate
 
 ## 🛠️ Development
 
