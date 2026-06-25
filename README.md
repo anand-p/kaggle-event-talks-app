@@ -81,7 +81,7 @@ python app.py
 Visit **http://127.0.0.1:5000** in your browser to view the dashboard.
 
 ---
-# Deactivate when done:
+### 4. deactivate virtual environment once all work is done
 
 bash
 deactivate
